@@ -262,7 +262,7 @@ def hmetad(
 
         pymcData = extractParameters(np.asarray(nR_S1), np.asarray(nR_S2))
 
-        from subject_level_pymc import hmetad_subjectLevel
+        from metadpy.models.subject_level_pymc import hmetad_subjectLevel
 
         model_output = hmetad_subjectLevel(
             pymcData,
@@ -279,7 +279,7 @@ def hmetad(
             data, subject, stimuli, accuracy, confidence, nRatings
         )
 
-        from group_level_pymc import hmetad_groupLevel
+        from metadpy.models.group_level_pymc import hmetad_groupLevel
 
         model_output = hmetad_groupLevel(
             pymcData,
