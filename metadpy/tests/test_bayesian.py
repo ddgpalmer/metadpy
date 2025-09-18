@@ -121,6 +121,64 @@ class Testsdt(TestCase):
         assert round(pymc_df["meta_d"].values[0], 2) - 1.58 < 0.01
         assert round(pymc_df["m_ratio"].values[0], 2) - 1.03 < 0.01
 
+        ##################
+        # Test group level
+        ##################
+        group_df = load_dataset("rm")
+        test_df = group_df[group_df['Subject'].isin([0, 1])]  # Just 2 subjects for testing
+
+        # Test model compilation only
+        model, _ = hmetad(
+            data=test_df,
+            subject='Subject',
+            nRatings=4,
+            stimuli='Stimuli',
+            accuracy='Accuracy',
+            confidence='Confidence',
+            sample_model=False
+        )
+        assert isinstance(model, pm.Model)
+        
+        # Check that group-level variables exist
+        model_vars = list(model.named_vars.keys())
+        assert 'mu_d1' in model_vars
+        assert 'mu_c1' in model_vars
+        assert 'mu_logMratio' in model_vars
+        assert 'sigma_d1' in model_vars
+        assert 'sigma_c1' in model_vars
+        assert 'sigma_logMratio' in model_vars
+        
+        # Check that subject-specific variables exist
+        assert 'c1' in model_vars  # Should be shape (nSubj,)
+        assert 'd1' in model_vars  # Should be shape (nSubj,)
+        assert 'meta_d' in model_vars  # Should be shape (nSubj,)
+        
+        # Test with sampling (minimal for speed)
+        model, trace = hmetad(
+            data=test_df,
+            subject='Subject',
+            nRatings=4,
+            stimuli='Stimuli',
+            accuracy='Accuracy',
+            confidence='Confidence',
+            sample_model=True,
+            num_samples=10,  # Very small for testing
+            num_chains=1,
+            tune=10
+        )
+        assert isinstance(model, pm.Model)
+        assert hasattr(trace, 'posterior')
+        
+        # Check that group parameters are in trace
+        group_vars = list(trace.posterior.data_vars.keys())
+        assert 'mu_d1' in group_vars
+        assert 'mu_c1' in group_vars
+        assert 'mu_logMratio' in group_vars
+        
+        # Check dimensions
+        assert trace.posterior.mu_d1.dims == ('chain', 'draw')  # Group-level scalar has chain, draw dims
+        assert trace.posterior.c1.dims == ('chain', 'draw', 'c1_dim_0')  # Vector has additional subject dim
+
 
 if __name__ == "__main__":
     unittest.main(argv=["first-arg-is-ignored"], exit=False)
