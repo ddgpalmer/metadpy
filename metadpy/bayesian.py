@@ -275,12 +275,18 @@ def hmetad(
     # Group level
     elif (within is None) & (between is None) & (subject is not None):
 
-        # pymcData = preprocess_group(
-        #     data, subject, stimuli, accuracy, confidence, nRatings
-        # )
+        pymcData = preprocess_group(
+            data, subject, stimuli, accuracy, confidence, nRatings, padding, padAmount
+        )
 
-        raise ValueError(
-            "Invalid backend provided - This model is not implemented yet."
+        from group_level_pymc import hmetad_groupLevel
+
+        model_output = hmetad_groupLevel(
+            pymcData,
+            sample_model=sample_model,
+            num_chains=num_chains,
+            num_samples=num_samples,
+            **kwargs
         )
 
     ###################
@@ -301,19 +307,43 @@ def hmetad(
         if output == "model":
             return model, traces
         elif output == "dataframe":
-            return pd.DataFrame(
-                {
-                    "d": [pymcData["d1"]],
-                    "c": [pymcData["c1"]],
-                    "meta_d": [
-                        az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
-                    ],
-                    "m_ratio": [
-                        az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
-                        / pymcData["d1"]
-                    ],
-                }
-            )
+            # Handle different cases for output
+            if (within is None) & (between is None) & (subject is None):
+                # Single subject case
+                return pd.DataFrame(
+                    {
+                        "d": [pymcData["d1"]],
+                        "c": [pymcData["c1"]],
+                        "meta_d": [
+                            az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
+                        ],
+                        "m_ratio": [
+                            az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
+                            / pymcData["d1"]
+                        ],
+                    }
+                )
+            elif (within is None) & (between is None) & (subject is not None):
+                # Group case
+                mratio_summary = az.summary(traces, var_names=["Mratio"])["mean"]
+                mu_logmratio = az.summary(traces, var_names=["mu_logMratio"])["mean"]["mu_logMratio"]
+                sigma_logmratio = az.summary(traces, var_names=["sigma_logMratio"])["mean"]["sigma_logMratio"]
+                
+                result_list = []
+                for s in range(pymcData["nSubj"]):
+                    result_list.append({
+                        "subject": s,
+                        "d": pymcData["d1"][s],
+                        "c": pymcData["c1"][s],
+                        "meta_d": mratio_summary[f"Mratio[{s}]"] * pymcData["d1"][s],
+                        "m_ratio": mratio_summary[f"Mratio[{s}]"],
+                    })
+                
+                df = pd.DataFrame(result_list)
+                # Add group-level parameters
+                df["mu_logMratio"] = mu_logmratio
+                df["sigma_logMratio"] = sigma_logmratio
+                return df
     else:
         return model_output, None
 
@@ -409,90 +439,99 @@ def extractParameters(
     return data
 
 
-# TODO: when implementing group level fitting, the following wrapper will be usefull.
-# def preprocess_group(
-#     data: pd.DataFrame,
-#     subject: str,
-#     stimuli: str,
-#     accuracy: str,
-#     confidence: str,
-#     nRatings: int,
-# ) -> Dict:
-#     """Preprocess group data.
+def preprocess_group(
+    data: pd.DataFrame,
+    subject: str,
+    stimuli: str,
+    accuracy: str,
+    confidence: str,
+    nRatings: int,
+    padding: bool = False,
+    padAmount: Optional[float] = None,
+) -> Dict:
+    """Preprocess group data.
 
-#     Parameters
-#     ----------
-#     data : :py:class:`pandas.DataFrame` or None
-#         Dataframe. Note that this function can also directly be used as a
-#         Pandas method, in which case this argument is no longer needed.
-#     subject : string or None
-#         Name of column containing the subject identifier (only required if a
-#         within-subject or a between-subject factor is provided).
-#     stimuli : string or None
-#         Name of the column containing the stimuli.
-#     accuracy : string or None
-#         Name of the columns containing the accuracy.
-#     confidence : string or None
-#         Name of the column containing the confidence ratings.
-#     nRatings : int or None
-#         Number of discrete ratings. If a continuous rating scale was used, and
-#         the number of unique ratings does not match `nRatings`, will convert to
-#         discrete ratings using :py:func:`metadpy.utils.discreteRatings`.
+    Parameters
+    ----------
+    data : :py:class:`pandas.DataFrame` or None
+        Dataframe. Note that this function can also directly be used as a
+        Pandas method, in which case this argument is no longer needed.
+    subject : string or None
+        Name of column containing the subject identifier (only required if a
+        within-subject or a between-subject factor is provided).
+    stimuli : string or None
+        Name of the column containing the stimuli.
+    accuracy : string or None
+        Name of the columns containing the accuracy.
+    confidence : string or None
+        Name of the column containing the confidence ratings.
+    nRatings : int or None
+        Number of discrete ratings. If a continuous rating scale was used, and
+        the number of unique ratings does not match `nRatings`, will convert to
+        discrete ratings using :py:func:`metadpy.utils.discreteRatings`.
+    padding : bool
+        If `True`, each response count in the output has the value of padAmount
+        added to it. Padding cells is desirable if trial counts of 0 interfere
+        with model fitting.
+    padAmount : float
+        The value to add to each response count if padding is set to True.
 
-#     Return
-#     ------
-#     pymcData : Dict
+    Return
+    ------
+    pymcData : Dict
 
-#     """
-#     pymcData = {
-#         "d1": [],
-#         "c1": [],
-#         "nSubj": data[subject].nunique(),
-#         "subID": np.arange(data[subject].nunique(), dtype="int"),
-#         "hits": [],
-#         "falsealarms": [],
-#         "s": [],
-#         "n": [],
-#         "counts": [],
-#         "nRatings": nRatings,
-#         "Tol": 1e-05,
-#         "cr": [],
-#         "m": [],
-#     }
+    """
+    pymcData = {
+        "d1": [],
+        "c1": [],
+        "nSubj": data[subject].nunique(),
+        "subID": np.arange(data[subject].nunique(), dtype="int"),
+        "hits": [],
+        "falsealarms": [],
+        "s": [],
+        "n": [],
+        "counts": [],
+        "nratings": nRatings,
+        "Tol": 1e-05,
+        "cr": [],
+        "m": [],
+    }
 
-#     for sub in data[subject].unique():
-#         nR_S1, nR_S2 = trials2counts(
-#             data=data[data[subject] == sub],
-#             stimuli=stimuli,
-#             accuracy=accuracy,
-#             confidence=confidence,
-#             nRatings=nRatings,
-#         )
+    for sub in data[subject].unique():
+        nR_S1, nR_S2 = trials2counts(
+            data=data[data[subject] == sub],
+            stimuli=stimuli,
+            accuracy=accuracy,
+            confidence=confidence,
+            nRatings=nRatings,
+            padding=padding,
+            padAmount=padAmount,
+        )
 
-#         this_data = extractParameters(nR_S1, nR_S2)
-#         pymcData["d1"].append(this_data["d1"])
-#         pymcData["c1"].append(this_data["c1"])
-#         pymcData["s"].append(this_data["S"])
-#         pymcData["n"].append(this_data["N"])
-#         pymcData["m"].append(this_data["M"])
-#         pymcData["cr"].append(this_data["CR"])
-#         pymcData["counts"].append(this_data["counts"])
-#         pymcData["hits"].append(this_data["H"])
-#         pymcData["falsealarms"].append(this_data["FA"])
+        this_data = extractParameters(nR_S1, nR_S2)
+        pymcData["d1"].append(this_data["d1"])
+        pymcData["c1"].append(this_data["c1"])
+        pymcData["s"].append(this_data["S"])
+        pymcData["n"].append(this_data["N"])
+        pymcData["m"].append(this_data["M"])
+        pymcData["cr"].append(this_data["CR"])
+        pymcData["counts"].append(this_data["counts"])
+        pymcData["hits"].append(this_data["H"])
+        pymcData["falsealarms"].append(this_data["FA"])
 
-#     pymcData["d1"] = np.array(pymcData["d1"], dtype="float")
-#     pymcData["c1"] = np.array(pymcData["c1"], dtype="float")
-#     pymcData["s"] = np.array(pymcData["s"], dtype="int")
-#     pymcData["n"] = np.array(pymcData["n"], dtype="int")
-#     pymcData["m"] = np.array(pymcData["m"], dtype="int")
-#     pymcData["cr"] = np.array(pymcData["cr"], dtype="int")
-#     pymcData["counts"] = np.array(pymcData["counts"], dtype="int")
-#     pymcData["hits"] = np.array(pymcData["hits"], dtype="int")
-#     pymcData["falsealarms"] = np.array(pymcData["falsealarms"], dtype="int")
-#     pymcData["nSubj"] = data[subject].nunique()
-#     pymcData["subID"] = np.arange(pymcData["nSubj"], dtype="int")
+    pymcData["d1"] = np.array(pymcData["d1"], dtype="float")
+    pymcData["c1"] = np.array(pymcData["c1"], dtype="float")
+    pymcData["s"] = np.array(pymcData["s"], dtype="int")
+    pymcData["n"] = np.array(pymcData["n"], dtype="int")
+    pymcData["m"] = np.array(pymcData["m"], dtype="int")
+    pymcData["cr"] = np.array(pymcData["cr"], dtype="int")
+    pymcData["counts"] = np.array(pymcData["counts"], dtype="int")
+    pymcData["hits"] = np.array(pymcData["hits"], dtype="int")
+    pymcData["falsealarms"] = np.array(pymcData["falsealarms"], dtype="int")
+    pymcData["nSubj"] = data[subject].nunique()
+    pymcData["subID"] = np.arange(pymcData["nSubj"], dtype="int")
 
-#     return pymcData
+    return pymcData
 
 
 # def preprocess_rm1way(
