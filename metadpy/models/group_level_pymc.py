@@ -12,7 +12,7 @@ def phi(x):
 def hmetad_groupLevel(
     data, sample_model=True, num_samples: int = 1000, num_chains: int = 4, **kwargs
 ):
-    """Hierarchical Bayesian modeling of meta-d' (group level).
+    """Hierarchical Bayesian modeling of meta-d' (group level) with vectorized parameters.
 
     This is an internal function. The group level model must be called using
     :py:func:`metadpy.bayesian.hmetad`.
@@ -53,170 +53,174 @@ def hmetad_groupLevel(
         # Group-level hyperpriors
         mu_logMratio = Normal("mu_logMratio", mu=0.0, sigma=1.0)
         sigma_logMratio = HalfNormal("sigma_logMratio", sigma=1.0)
-        
         mu_c2 = Normal("mu_c2", mu=0.0, sigma=2.0)
         sigma_c2 = HalfNormal("sigma_c2", sigma=2.0)
 
-        # Subject-level parameters
-        # Use empirical values for Type 1 parameters to reduce complexity initially
-        c1_vals = data["c1"]  # Use empirical Type 1 criterion
-        d1_vals = data["d1"]  # Use empirical Type 1 d'
+        # Subject-level parameters (vectorized)
+        c1_vals = pt.as_tensor(data["c1"])
+        d1_vals = pt.as_tensor(data["d1"])
         
-        # Hierarchical log M-ratio
         logMratio = Normal("logMratio", mu=mu_logMratio, sigma=sigma_logMratio, shape=nSubj)
         Mratio = Deterministic("Mratio", pt.exp(logMratio))
-        
+        meta_d = Deterministic("meta_d", Mratio * d1_vals)
+
         # Group-level parameters (means and standard deviations)
-        # Convert empirical data to tensors for computation
-        d1_tensor = pt.as_tensor_variable(d1_vals)
-        c1_tensor = pt.as_tensor_variable(c1_vals)
-        meta_d_tensor = Mratio * d1_tensor
-        
         # Group-level d1 statistics
-        d1_group_mean = Deterministic("d1_group_mean", pt.mean(d1_tensor))
-        d1_group_std = Deterministic("d1_group_std", pt.std(d1_tensor))
+        d1_group_mean = Deterministic("d1_group_mean", pt.mean(d1_vals))
+        d1_group_std = Deterministic("d1_group_std", pt.std(d1_vals))
         
         # Group-level c1 statistics  
-        c1_group_mean = Deterministic("c1_group_mean", pt.mean(c1_tensor))
-        c1_group_std = Deterministic("c1_group_std", pt.std(c1_tensor))
+        c1_group_mean = Deterministic("c1_group_mean", pt.mean(c1_vals))
+        c1_group_std = Deterministic("c1_group_std", pt.std(c1_vals))
         
         # Group-level meta_d statistics
-        meta_d_group_mean = Deterministic("meta_d_group_mean", pt.mean(meta_d_tensor))
-        meta_d_group_std = Deterministic("meta_d_group_std", pt.std(meta_d_tensor))
+        meta_d_group_mean = Deterministic("meta_d_group_mean", pt.mean(meta_d))
+        meta_d_group_std = Deterministic("meta_d_group_std", pt.std(meta_d))
+
+        # TYPE 1 SDT BINOMIAL MODEL (vectorized)
+        h = phi(d1_vals / 2 - c1_vals) 
+        f = phi(-d1_vals / 2 - c1_vals)
         
-        # Build the model for each subject using the same structure as the single-subject model
-        c2_all_subjects = []  # Collect c2 criteria across all subjects
-        
-        for s in range(nSubj):
-            c1_s = c1_vals[s]
-            d1_s = d1_vals[s]
-            meta_d_s = Mratio[s] * d1_s
+        H = Binomial("H", n=data["s"], p=h, observed=data["hits"], shape=nSubj)
+        FA = Binomial("FA", n=data["n"], p=f, observed=data["falsealarms"], shape=nSubj)
 
-            # TYPE 1 SDT BINOMIAL MODEL
-            h_s = phi(d1_s / 2 - c1_s)
-            f_s = phi(-d1_s / 2 - c1_s)
-            H_s = Binomial(f"H_{s}", data["s"][s], h_s, observed=data["hits"][s])
-            FA_s = Binomial(f"FA_{s}", data["n"][s], f_s, observed=data["falsealarms"][s])
+        # Vectorized ordered priors on criteria bounded above and below by Type 1 c1
+        cS1_hn = HalfNormal("cS1_hn", sigma=sigma_c2, shape=(nSubj, nRatings - 1))
+        cS1 = Deterministic("cS1", pt.sort(-cS1_hn, axis=-1) + (c1_vals[:, None] - data["Tol"]))
 
-            # Specify ordered prior on criteria bounded above and below by Type 1 c1
-            cS1_hn_s = HalfNormal(f"cS1_hn_{s}", sigma=sigma_c2, shape=nRatings - 1)
-            cS1_s = Deterministic(f"cS1_{s}", pt.sort(-cS1_hn_s) + (c1_s - data["Tol"]))
-
-            cS2_hn_s = HalfNormal(f"cS2_hn_{s}", sigma=sigma_c2, shape=nRatings - 1)
-            cS2_s = Deterministic(f"cS2_{s}", pt.sort(cS2_hn_s) + (c1_s + data["Tol"]))
-            
-            # Collect c2 criteria (combination of cS1 and cS2) for group statistics
-            c2_s = pt.concatenate([cS1_s, cS2_s], axis=0)
-            c2_all_subjects.append(c2_s)
-
-            # Means of SDT distributions
-            S2mu_s = pt.flatten(meta_d_s / 2, 1)
-            S1mu_s = pt.flatten(-meta_d_s / 2, 1)
-
-            # Calculate normalisation constants
-            C_area_rS1_s = phi(c1_s - S1mu_s)
-            I_area_rS1_s = phi(c1_s - S2mu_s)
-            C_area_rS2_s = 1 - phi(c1_s - S2mu_s)
-            I_area_rS2_s = 1 - phi(c1_s - S1mu_s)
-
-            # Get nC_rS1 probs
-            nC_rS1_temp = phi(cS1_s - S1mu_s) / C_area_rS1_s
-            nC_rS1_s = Deterministic(
-                f"nC_rS1_{s}",
-                pt.concatenate(
-                    [
-                        pt.reshape(phi(cS1_s[0] - S1mu_s) / C_area_rS1_s, (1,)),
-                        nC_rS1_temp[1:] - nC_rS1_temp[:-1],
-                        pt.reshape((phi(c1_s - S1mu_s) - phi(cS1_s[(nRatings - 2)] - S1mu_s)) / C_area_rS1_s, (1,)),
-                    ],
-                    axis=0,
-                ),
-            )
-
-            # Get nI_rS2 probs
-            nI_rS2_temp = (1 - phi(cS2_s - S1mu_s)) / I_area_rS2_s
-            nI_rS2_s = Deterministic(
-                f"nI_rS2_{s}",
-                pt.concatenate(
-                    [
-                        pt.reshape(((1 - phi(c1_s - S1mu_s)) - (1 - phi(cS2_s[0] - S1mu_s))) / I_area_rS2_s, (1,)),
-                        nI_rS2_temp[:-1] - (1 - phi(cS2_s[1:] - S1mu_s)) / I_area_rS2_s,
-                        pt.reshape((1 - phi(cS2_s[nRatings - 2] - S1mu_s)) / I_area_rS2_s, (1,)),
-                    ],
-                    axis=0,
-                ),
-            )
-
-            # Get nI_rS1 probs
-            nI_rS1_temp = phi(cS1_s - S2mu_s) / I_area_rS1_s
-            nI_rS1_s = Deterministic(
-                f"nI_rS1_{s}",
-                pt.concatenate(
-                    [
-                        pt.reshape(phi(cS1_s[0] - S2mu_s) / I_area_rS1_s, (1,)),
-                        phi(cS1_s[1:] - S2mu_s) / I_area_rS1_s - nI_rS1_temp[:-1],
-                        pt.reshape((phi(c1_s - S2mu_s) - phi(cS1_s[(nRatings - 2)] - S2mu_s)) / I_area_rS1_s, (1,)),
-                    ],
-                    axis=0,
-                ),
-            )
-
-            # Get nC_rS2 probs
-            nC_rS2_temp = (1 - phi(cS2_s - S2mu_s)) / C_area_rS2_s
-            nC_rS2_s = Deterministic(
-                f"nC_rS2_{s}",
-                pt.concatenate(
-                    [
-                        pt.reshape(((1 - phi(c1_s - S2mu_s)) - (1 - phi(cS2_s[0] - S2mu_s))) / C_area_rS2_s, (1,)),
-                        nC_rS2_temp[:-1] - ((1 - phi(cS2_s[1:] - S2mu_s)) / C_area_rS2_s),
-                        pt.reshape((1 - phi(cS2_s[nRatings - 2] - S2mu_s)) / C_area_rS2_s, (1,)),
-                    ],
-                    axis=0,
-                ),
-            )
-
-            # Avoid underflow of probabilities
-            nC_rS1_s = pt.switch(nC_rS1_s < data["Tol"], data["Tol"], nC_rS1_s)
-            nI_rS2_s = pt.switch(nI_rS2_s < data["Tol"], data["Tol"], nI_rS2_s)
-            nI_rS1_s = pt.switch(nI_rS1_s < data["Tol"], data["Tol"], nI_rS1_s)
-            nC_rS2_s = pt.switch(nC_rS2_s < data["Tol"], data["Tol"], nC_rS2_s)
-
-            # TYPE 2 SDT MODEL (META-D)
-            # Multinomial likelihood for response counts ordered as c(nR_S1,nR_S2)
-            Multinomial(
-                f"CR_counts_{s}",
-                n=data["cr"][s],
-                p=nC_rS1_s,
-                shape=nRatings,
-                observed=data["counts"][s, :nRatings],
-            )
-            Multinomial(
-                f"FA_counts_{s}",
-                n=data["falsealarms"][s],
-                p=nI_rS2_s,
-                shape=nRatings,
-                observed=data["counts"][s, nRatings : nRatings * 2],
-            )
-            Multinomial(
-                f"M_counts_{s}",
-                n=data["m"][s],
-                p=nI_rS1_s,
-                shape=nRatings,
-                observed=data["counts"][s, nRatings * 2 : nRatings * 3],
-            )
-            Multinomial(
-                f"H_counts_{s}",
-                n=data["hits"][s],
-                p=nC_rS2_s,
-                shape=nRatings,
-                observed=data["counts"][s, nRatings * 3 : nRatings * 4],
-            )
+        cS2_hn = HalfNormal("cS2_hn", sigma=sigma_c2, shape=(nSubj, nRatings - 1))
+        cS2 = Deterministic("cS2", pt.sort(cS2_hn, axis=-1) + (c1_vals[:, None] + data["Tol"]))
 
         # Group-level c2 statistics (computed from all subjects' c2 criteria)
-        if c2_all_subjects:
-            c2_group_tensor = pt.stack(c2_all_subjects, axis=0)  # Shape: (nSubj, n_criteria)
-            c2_group_mean = Deterministic("c2_group_mean", pt.mean(c2_group_tensor, axis=0))
-            c2_group_std = Deterministic("c2_group_std", pt.std(c2_group_tensor, axis=0))
+        # c2 represents the Type 2 confidence criteria (combination of cS1 and cS2)
+        c2_combined = pt.concatenate([cS1, cS2], axis=1)  # Shape: (nSubj, 2*(nRatings-1))
+        c2_group_mean = Deterministic("c2_group_mean", pt.mean(c2_combined, axis=0))
+        c2_group_std = Deterministic("c2_group_std", pt.std(c2_combined, axis=0))
+
+        # Means of SDT distributions (vectorized)
+        S2mu = meta_d / 2
+        S1mu = -meta_d / 2
+
+        # Calculate normalisation constants (vectorized)
+        C_area_rS1 = phi(c1_vals - S1mu)
+        I_area_rS1 = phi(c1_vals - S2mu)
+        C_area_rS2 = 1 - phi(c1_vals - S2mu)
+        I_area_rS2 = 1 - phi(c1_vals - S1mu)
+        
+        last_idx = nRatings - 2
+
+        # Get nC_rS1 probs (vectorized)
+        nC_rS1_temp = phi(cS1 - S1mu[:, None]) / C_area_rS1[:, None]
+        
+        nC_rS1_first = phi(cS1[:, 0] - S1mu) / C_area_rS1
+        nC_rS1_mid = nC_rS1_temp[:, 1:] - nC_rS1_temp[:, :-1]
+        nC_rS1_last = (phi(c1_vals - S1mu) - phi(cS1[:, last_idx] - S1mu)) / C_area_rS1
+        
+        nC_rS1 = Deterministic(
+            "nC_rS1",
+            pt.concatenate([
+                nC_rS1_first[:, None],
+                nC_rS1_mid,
+                nC_rS1_last[:, None]
+            ], axis=1)
+        )
+
+        # Get nI_rS2 probs (vectorized)
+        nI_rS2_temp = (1 - phi(cS2 - S1mu[:, None])) / I_area_rS2[:, None]
+        
+        nI_rS2_first = ((1 - phi(c1_vals - S1mu)) - (1 - phi(cS2[:, 0] - S1mu))) / I_area_rS2
+        nI_rS2_mid = nI_rS2_temp[:, :-1] - (1 - phi(cS2[:, 1:] - S1mu[:, None])) / I_area_rS2[:, None]
+        nI_rS2_last = (1 - phi(cS2[:, last_idx] - S1mu)) / I_area_rS2
+        
+        nI_rS2 = Deterministic(
+            "nI_rS2",
+            pt.concatenate([
+                nI_rS2_first[:, None],
+                nI_rS2_mid,
+                nI_rS2_last[:, None]
+            ], axis=1)
+        )
+
+        # Get nI_rS1 probs (vectorized)
+        nI_rS1_temp = phi(cS1 - S2mu[:, None]) / I_area_rS1[:, None]
+        
+        nI_rS1_first = phi(cS1[:, 0] - S2mu) / I_area_rS1
+        nI_rS1_mid = phi(cS1[:, 1:] - S2mu[:, None]) / I_area_rS1[:, None] - nI_rS1_temp[:, :-1]
+        nI_rS1_last = (phi(c1_vals - S2mu) - phi(cS1[:, last_idx] - S2mu)) / I_area_rS1
+        
+        nI_rS1 = Deterministic(
+            "nI_rS1",
+            pt.concatenate([
+                nI_rS1_first[:, None],
+                nI_rS1_mid,
+                nI_rS1_last[:, None]
+            ], axis=1)
+        )
+
+        # Get nC_rS2 probs (vectorized)
+        nC_rS2_temp = (1 - phi(cS2 - S2mu[:, None])) / C_area_rS2[:, None]
+        
+        nC_rS2_first = ((1 - phi(c1_vals - S2mu)) - (1 - phi(cS2[:, 0] - S2mu))) / C_area_rS2
+        nC_rS2_mid = nC_rS2_temp[:, :-1] - ((1 - phi(cS2[:, 1:] - S2mu[:, None])) / C_area_rS2[:, None])
+        nC_rS2_last = (1 - phi(cS2[:, last_idx] - S2mu)) / C_area_rS2
+        
+        nC_rS2 = Deterministic(
+            "nC_rS2",
+            pt.concatenate([
+                nC_rS2_first[:, None],
+                nC_rS2_mid,
+                nC_rS2_last[:, None]
+            ], axis=1)
+        )
+
+        # Avoid underflow of probabilities (vectorized)
+        nC_rS1 = pt.switch(nC_rS1 < data["Tol"], data["Tol"], nC_rS1)
+        nI_rS2 = pt.switch(nI_rS2 < data["Tol"], data["Tol"], nI_rS2)
+        nI_rS1 = pt.switch(nI_rS1 < data["Tol"], data["Tol"], nI_rS1)
+        nC_rS2 = pt.switch(nC_rS2 < data["Tol"], data["Tol"], nC_rS2)
+
+        # TYPE 2 SDT MODEL (META-D) - Vectorized multinomial likelihood
+        # Reshape data counts to match vectorized structure
+        counts_reshaped = pt.as_tensor(data["counts"])  # Shape: (nSubj, 16)
+        
+        # Extract counts for each response type
+        cr_counts = counts_reshaped[:, :nRatings]  # Shape: (nSubj, nRatings)
+        fa_counts = counts_reshaped[:, nRatings:nRatings*2]  # Shape: (nSubj, nRatings)  
+        m_counts = counts_reshaped[:, nRatings*2:nRatings*3]  # Shape: (nSubj, nRatings)
+        h_counts = counts_reshaped[:, nRatings*3:nRatings*4]  # Shape: (nSubj, nRatings)
+        
+        # Create vectorized multinomial distributions
+        CR_counts = Multinomial(
+            "CR_counts",
+            n=data["cr"],  # Shape: (nSubj,)
+            p=nC_rS1,  # Shape: (nSubj, nRatings)
+            observed=cr_counts,  # Shape: (nSubj, nRatings)
+            shape=(nSubj, nRatings)
+        )
+        
+        FA_counts = Multinomial(
+            "FA_counts",
+            n=data["falsealarms"],  # Shape: (nSubj,)
+            p=nI_rS2,  # Shape: (nSubj, nRatings)
+            observed=fa_counts,  # Shape: (nSubj, nRatings)
+            shape=(nSubj, nRatings)
+        )
+        
+        M_counts = Multinomial(
+            "M_counts", 
+            n=data["m"],  # Shape: (nSubj,)
+            p=nI_rS1,  # Shape: (nSubj, nRatings)
+            observed=m_counts,  # Shape: (nSubj, nRatings)
+            shape=(nSubj, nRatings)
+        )
+        
+        H_counts = Multinomial(
+            "H_counts",
+            n=data["hits"],  # Shape: (nSubj,)
+            p=nC_rS2,  # Shape: (nSubj, nRatings)
+            observed=h_counts,  # Shape: (nSubj, nRatings)
+            shape=(nSubj, nRatings)
+        )
 
         if sample_model is True:
             trace = sample(
