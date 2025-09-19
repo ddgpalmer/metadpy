@@ -8,7 +8,7 @@ import pymc as pm
 import pytest
 
 from metadpy import load_dataset
-from metadpy.bayesian import extractParameters, hmetad
+from metadpy.bayesian import extractParameters, hmetad, preprocess_group
 from metadpy.utils import ratings2df
 
 
@@ -32,6 +32,27 @@ class Testsdt(TestCase):
         assert data["H"] == 156
         assert data["N"] == 200
         assert data["S"] == 200
+
+    def test_preprocess_group(self):
+        """Test group preprocessing function"""
+        group_df = load_dataset("rm")
+        
+        # Use a subset for faster testing
+        subset_df = group_df[(group_df.Subject < 3) & (group_df.nTrial < 50)].copy()
+        
+        data = preprocess_group(
+            subset_df, "Subject", "Stimuli", "Accuracy", "Confidence", 4
+        )
+        
+        assert data["nSubj"] == 3
+        assert data["nratings"] == 4
+        assert len(data["d1"]) == 3
+        assert len(data["c1"]) == 3
+        assert data["counts"].shape == (3, 16)  # 3 subjects, 16 response categories
+        assert len(data["hits"]) == 3
+        assert len(data["falsealarms"]) == 3
+        assert len(data["m"]) == 3
+        assert len(data["cr"]) == 3
 
     def test_hmetad(self):
         """Test hmetad function"""
@@ -120,6 +141,46 @@ class Testsdt(TestCase):
         assert round(pymc_df["c"].values[0], 2) - 0.0 < 0.01
         assert round(pymc_df["meta_d"].values[0], 2) - 1.58 < 0.01
         assert round(pymc_df["m_ratio"].values[0], 2) - 1.03 < 0.01
+
+        ####################
+        # Test group level
+        ####################
+        # Use a subset of data for faster testing
+        subset_df = group_df[(group_df.Subject < 3) & (group_df.nTrial < 100)].copy()
+        
+        # Test just model creation
+        model, _ = hmetad(
+            data=subset_df,
+            nRatings=4,
+            stimuli="Stimuli",
+            accuracy="Accuracy",
+            confidence="Confidence",
+            subject="Subject",
+            sample_model=False,
+        )
+        assert isinstance(model, pm.Model)
+        
+        # Test with minimal sampling
+        model, trace = hmetad(
+            data=subset_df,
+            nRatings=4,
+            stimuli="Stimuli",
+            accuracy="Accuracy",
+            confidence="Confidence",
+            subject="Subject",
+            sample_model=True,
+            num_samples=5,
+            num_chains=1,
+            cores=1,
+            tune=5,
+            progressbar=False,
+        )
+        assert isinstance(model, pm.Model)
+        # Check that hierarchical parameters are in the trace
+        assert "mu_logMratio" in trace.posterior.data_vars
+        assert "sigma_logMratio" in trace.posterior.data_vars
+        assert "logMratio" in trace.posterior.data_vars
+        assert "Mratio" in trace.posterior.data_vars
 
 
 if __name__ == "__main__":

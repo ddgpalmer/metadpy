@@ -307,19 +307,43 @@ def hmetad(
         if output == "model":
             return model, traces
         elif output == "dataframe":
-            return pd.DataFrame(
-                {
-                    "d": [pymcData["d1"]],
-                    "c": [pymcData["c1"]],
-                    "meta_d": [
-                        az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
-                    ],
-                    "m_ratio": [
-                        az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
-                        / pymcData["d1"]
-                    ],
-                }
-            )
+            # Handle different cases for output
+            if (within is None) & (between is None) & (subject is None):
+                # Single subject case
+                return pd.DataFrame(
+                    {
+                        "d": [pymcData["d1"]],
+                        "c": [pymcData["c1"]],
+                        "meta_d": [
+                            az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
+                        ],
+                        "m_ratio": [
+                            az.summary(traces, var_names=["meta_d"])["mean"]["meta_d"]
+                            / pymcData["d1"]
+                        ],
+                    }
+                )
+            elif (within is None) & (between is None) & (subject is not None):
+                # Group case
+                mratio_summary = az.summary(traces, var_names=["Mratio"])["mean"]
+                mu_logmratio = az.summary(traces, var_names=["mu_logMratio"])["mean"]["mu_logMratio"]
+                sigma_logmratio = az.summary(traces, var_names=["sigma_logMratio"])["mean"]["sigma_logMratio"]
+                
+                result_list = []
+                for s in range(pymcData["nSubj"]):
+                    result_list.append({
+                        "subject": s,
+                        "d": pymcData["d1"][s],
+                        "c": pymcData["c1"][s],
+                        "meta_d": mratio_summary[f"Mratio[{s}]"] * pymcData["d1"][s],
+                        "m_ratio": mratio_summary[f"Mratio[{s}]"],
+                    })
+                
+                df = pd.DataFrame(result_list)
+                # Add group-level parameters
+                df["mu_logMratio"] = mu_logmratio
+                df["sigma_logMratio"] = sigma_logmratio
+                return df
     else:
         return model_output, None
 
