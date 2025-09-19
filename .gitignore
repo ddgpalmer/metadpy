@@ -6,3 +6,6 @@ build
 *egg-info
 docs/source/generated/*
 dist/
+# Temporary files
+/tmp/
+

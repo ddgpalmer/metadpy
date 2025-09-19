@@ -181,6 +181,18 @@ class Testsdt(TestCase):
         assert "sigma_logMratio" in trace.posterior.data_vars
         assert "logMratio" in trace.posterior.data_vars
         assert "Mratio" in trace.posterior.data_vars
+        
+        # Check that group-level estimates are accessible
+        assert "mu_meta_d" in trace.posterior.data_vars
+        assert "mu_d1" in trace.posterior.data_vars
+        assert "mu_c1" in trace.posterior.data_vars
+        assert "mu_c2_mean" in trace.posterior.data_vars
+        assert "sigma_meta_d" in trace.posterior.data_vars
+        assert "sigma_c2_estimates" in trace.posterior.data_vars
+        
+        # Check that mu_c2 is connected via c2_raw
+        assert "mu_c2" in trace.posterior.data_vars
+        assert "c2_raw" in trace.posterior.data_vars
 
 
 if __name__ == "__main__":
