@@ -62,22 +62,35 @@ def hmetad_groupLevel(
         c1_vals = data["c1"]  # Use empirical Type 1 criterion
         d1_vals = data["d1"]  # Use empirical Type 1 d'
         
-        # Store empirical d1 and c1 values as Deterministic variables for availability in idata
-        d1 = Deterministic("d1", pt.as_tensor_variable(d1_vals))
-        c1 = Deterministic("c1", pt.as_tensor_variable(c1_vals))
-        
         # Hierarchical log M-ratio
         logMratio = Normal("logMratio", mu=mu_logMratio, sigma=sigma_logMratio, shape=nSubj)
         Mratio = Deterministic("Mratio", pt.exp(logMratio))
         
-        # Compute meta_d for each subject and store as Deterministic variable
-        meta_d = Deterministic("meta_d", Mratio * d1)
+        # Group-level parameters (means and standard deviations)
+        # Convert empirical data to tensors for computation
+        d1_tensor = pt.as_tensor_variable(d1_vals)
+        c1_tensor = pt.as_tensor_variable(c1_vals)
+        meta_d_tensor = Mratio * d1_tensor
+        
+        # Group-level d1 statistics
+        d1_group_mean = Deterministic("d1_group_mean", pt.mean(d1_tensor))
+        d1_group_std = Deterministic("d1_group_std", pt.std(d1_tensor))
+        
+        # Group-level c1 statistics  
+        c1_group_mean = Deterministic("c1_group_mean", pt.mean(c1_tensor))
+        c1_group_std = Deterministic("c1_group_std", pt.std(c1_tensor))
+        
+        # Group-level meta_d statistics
+        meta_d_group_mean = Deterministic("meta_d_group_mean", pt.mean(meta_d_tensor))
+        meta_d_group_std = Deterministic("meta_d_group_std", pt.std(meta_d_tensor))
         
         # Build the model for each subject using the same structure as the single-subject model
+        c2_all_subjects = []  # Collect c2 criteria across all subjects
+        
         for s in range(nSubj):
-            c1_s = c1[s]
-            d1_s = d1[s]
-            meta_d_s = meta_d[s]
+            c1_s = c1_vals[s]
+            d1_s = d1_vals[s]
+            meta_d_s = Mratio[s] * d1_s
 
             # TYPE 1 SDT BINOMIAL MODEL
             h_s = phi(d1_s / 2 - c1_s)
@@ -92,9 +105,9 @@ def hmetad_groupLevel(
             cS2_hn_s = HalfNormal(f"cS2_hn_{s}", sigma=sigma_c2, shape=nRatings - 1)
             cS2_s = Deterministic(f"cS2_{s}", pt.sort(cS2_hn_s) + (c1_s + data["Tol"]))
             
-            # Store c2 criteria as Deterministic variables for availability in idata
-            # c2 represents the Type 2 confidence criteria
-            c2_s = Deterministic(f"c2_{s}", pt.concatenate([cS1_s, cS2_s], axis=0))
+            # Collect c2 criteria (combination of cS1 and cS2) for group statistics
+            c2_s = pt.concatenate([cS1_s, cS2_s], axis=0)
+            c2_all_subjects.append(c2_s)
 
             # Means of SDT distributions
             S2mu_s = pt.flatten(meta_d_s / 2, 1)
@@ -198,6 +211,12 @@ def hmetad_groupLevel(
                 shape=nRatings,
                 observed=data["counts"][s, nRatings * 3 : nRatings * 4],
             )
+
+        # Group-level c2 statistics (computed from all subjects' c2 criteria)
+        if c2_all_subjects:
+            c2_group_tensor = pt.stack(c2_all_subjects, axis=0)  # Shape: (nSubj, n_criteria)
+            c2_group_mean = Deterministic("c2_group_mean", pt.mean(c2_group_tensor, axis=0))
+            c2_group_std = Deterministic("c2_group_std", pt.std(c2_group_tensor, axis=0))
 
         if sample_model is True:
             trace = sample(
