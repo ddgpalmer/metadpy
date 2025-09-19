@@ -71,6 +71,9 @@ def hmetad_groupLevel(
         H = Binomial("H", n=data["s"], p=h, observed=data["hits"], shape=nSubj)
         FA = Binomial("FA", n=data["n"], p=f, observed=data["falsealarms"], shape=nSubj)
 
+        # Hierarchical priors for criterion parameters, now connected to mu_c2
+        c2_raw = Normal("c2_raw", mu=mu_c2, sigma=sigma_c2, shape=(nSubj, nRatings - 1))
+        
         # Vectorized ordered priors on criteria bounded above and below by Type 1 c1
         cS1_hn = HalfNormal("cS1_hn", sigma=sigma_c2, shape=(nSubj, nRatings - 1))
         cS1 = Deterministic("cS1", pt.sort(-cS1_hn, axis=-1) + (c1_vals[:, None] - data["Tol"]))
@@ -159,6 +162,14 @@ def hmetad_groupLevel(
         nI_rS2 = pt.switch(nI_rS2 < data["Tol"], data["Tol"], nI_rS2)
         nI_rS1 = pt.switch(nI_rS1 < data["Tol"], data["Tol"], nI_rS1)
         nC_rS2 = pt.switch(nC_rS2 < data["Tol"], data["Tol"], nC_rS2)
+
+        # Group-level estimates (accessible in idata)
+        mu_meta_d = Deterministic("mu_meta_d", pt.mean(meta_d))
+        sigma_meta_d = Deterministic("sigma_meta_d", pt.std(meta_d))
+        mu_d1 = Deterministic("mu_d1", pt.mean(d1_vals))
+        mu_c1 = Deterministic("mu_c1", pt.mean(c1_vals))
+        mu_c2_mean = Deterministic("mu_c2_mean", pt.mean(c2_raw, axis=0))
+        sigma_c2_estimates = Deterministic("sigma_c2_estimates", pt.std(c2_raw, axis=0))
 
         # TYPE 2 SDT MODEL (META-D) - Vectorized multinomial likelihood
         # Reshape data counts to match vectorized structure
