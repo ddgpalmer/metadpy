@@ -42,7 +42,7 @@ MAINTAINER = "Nicolas Legrand"
 MAINTAINER_EMAIL = "nicolas.legrand@cas.au.dk"
 VERSION = "0.1.1"
 
-PACKAGES = ["metadpy", "metadpy.datasets"]
+PACKAGES = ["metadpy", "metadpy.datasets", "metadpy.models"]
 
 
 if __name__ == "__main__":
