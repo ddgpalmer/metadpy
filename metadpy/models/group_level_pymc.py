@@ -62,15 +62,22 @@ def hmetad_groupLevel(
         c1_vals = data["c1"]  # Use empirical Type 1 criterion
         d1_vals = data["d1"]  # Use empirical Type 1 d'
         
+        # Store empirical d1 and c1 values as Deterministic variables for availability in idata
+        d1 = Deterministic("d1", pt.as_tensor_variable(d1_vals))
+        c1 = Deterministic("c1", pt.as_tensor_variable(c1_vals))
+        
         # Hierarchical log M-ratio
         logMratio = Normal("logMratio", mu=mu_logMratio, sigma=sigma_logMratio, shape=nSubj)
         Mratio = Deterministic("Mratio", pt.exp(logMratio))
         
+        # Compute meta_d for each subject and store as Deterministic variable
+        meta_d = Deterministic("meta_d", Mratio * d1)
+        
         # Build the model for each subject using the same structure as the single-subject model
         for s in range(nSubj):
-            c1_s = c1_vals[s]
-            d1_s = d1_vals[s]
-            meta_d_s = Mratio[s] * d1_s
+            c1_s = c1[s]
+            d1_s = d1[s]
+            meta_d_s = meta_d[s]
 
             # TYPE 1 SDT BINOMIAL MODEL
             h_s = phi(d1_s / 2 - c1_s)
@@ -84,6 +91,10 @@ def hmetad_groupLevel(
 
             cS2_hn_s = HalfNormal(f"cS2_hn_{s}", sigma=sigma_c2, shape=nRatings - 1)
             cS2_s = Deterministic(f"cS2_{s}", pt.sort(cS2_hn_s) + (c1_s + data["Tol"]))
+            
+            # Store c2 criteria as Deterministic variables for availability in idata
+            # c2 represents the Type 2 confidence criteria
+            c2_s = Deterministic(f"c2_{s}", pt.concatenate([cS1_s, cS2_s], axis=0))
 
             # Means of SDT distributions
             S2mu_s = pt.flatten(meta_d_s / 2, 1)
