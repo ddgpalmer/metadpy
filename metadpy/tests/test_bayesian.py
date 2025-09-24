@@ -193,6 +193,10 @@ class Testsdt(TestCase):
         # Check that mu_c2 is connected via c2_raw
         assert "mu_c2" in trace.posterior.data_vars
         assert "c2_raw" in trace.posterior.data_vars
+        
+        # Check that non-centred parameterisation variables are present
+        assert "logMratio_raw" in trace.posterior.data_vars
+        assert "c2_raw_std" in trace.posterior.data_vars
 
 
 if __name__ == "__main__":

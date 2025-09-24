@@ -60,7 +60,9 @@ def hmetad_groupLevel(
         c1_vals = pt.as_tensor(data["c1"])
         d1_vals = pt.as_tensor(data["d1"])
         
-        logMratio = Normal("logMratio", mu=mu_logMratio, sigma=sigma_logMratio, shape=nSubj)
+        # Non-centred parameterisation for logMratio
+        logMratio_raw = Normal("logMratio_raw", mu=0.0, sigma=1.0, shape=nSubj)
+        logMratio = Deterministic("logMratio", mu_logMratio + sigma_logMratio * logMratio_raw)
         Mratio = Deterministic("Mratio", pt.exp(logMratio))
         meta_d = Deterministic("meta_d", Mratio * d1_vals)
 
@@ -71,8 +73,9 @@ def hmetad_groupLevel(
         H = Binomial("H", n=data["s"], p=h, observed=data["hits"], shape=nSubj)
         FA = Binomial("FA", n=data["n"], p=f, observed=data["falsealarms"], shape=nSubj)
 
-        # Hierarchical priors for criterion parameters, now connected to mu_c2
-        c2_raw = Normal("c2_raw", mu=mu_c2, sigma=sigma_c2, shape=(nSubj, nRatings - 1))
+        # Non-centred parameterisation for criterion parameters
+        c2_raw_std = Normal("c2_raw_std", mu=0.0, sigma=1.0, shape=(nSubj, nRatings - 1))
+        c2_raw = Deterministic("c2_raw", mu_c2 + sigma_c2 * c2_raw_std)
         
         # Vectorized ordered priors on criteria bounded above and below by Type 1 c1
         cS1_hn = HalfNormal("cS1_hn", sigma=sigma_c2, shape=(nSubj, nRatings - 1))
